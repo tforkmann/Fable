@@ -330,6 +330,16 @@ Target "BuildReplAsNodeApp" (fun () ->
     runBench2 ()
 )
 
+Target "Bootstrap" (fun () ->
+    clean ()
+    buildCLI Release ()
+    buildSplitter ()
+    buildCoreJs ()
+
+    // Build package
+    run "src/dotnet/Fable.Compiler" dotnetExePath "pack -c Release /property:NugetPackage=true -o ../../../build/pkg"
+)
+
 "PublishPackages"
 ==> "GitHubRelease"
 

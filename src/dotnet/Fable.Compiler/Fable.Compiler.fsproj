@@ -3,12 +3,11 @@
   <PropertyGroup>
     <Description>Fable: F# to JS Compiler</Description>
     <Version>2.0.0</Version>
-    <PackageVersion>2.0.0-beta-002</PackageVersion>
+    <PackageVersion>2.0.0-beta-100</PackageVersion>
     <OutputType>Exe</OutputType>
     <PackageType>DotnetCliTool</PackageType>
     <AssemblyName>dotnet-fable</AssemblyName>
-    <TargetFramework>netcoreapp2.0</TargetFramework>
-    <RuntimeFrameworkVersion>2.0.0</RuntimeFrameworkVersion>
+    <TargetFramework>netcoreapp2.1</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Global/Fable.Core.fs" />

@@ -1,8 +1,9 @@
 {
   "private": true,
   "scripts": {
-    "build-splitter": "dotnet run -p ../../src/dotnet/Fable.Compiler fable-splitter --force-pkgs --args \"src/React.TodoMVC.fsproj -o temp -w\"",
-    "build-webpack": "dotnet run -p ../../src/dotnet/Fable.Compiler webpack-cli --force-pkgs --args \"--mode production\""
+    "postinstall": "dotnet restore src",
+    "build-local": "dotnet ../../build/fable/dotnet-fable.dll fable-splitter -- src/React.TodoMVC.fsproj -o temp",
+    "build-pkg": "cd src && dotnet fable fable-splitter -- src/React.TodoMVC.fsproj -o temp"
   },
   "devDependencies": {
     "babel-core": "^6.26.3",

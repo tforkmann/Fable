@@ -565,8 +565,15 @@ let rec optimizeDeclaration (com: ICompiler) = function
                     ObjectMember(optimizeExpr com k, optimizeExpr com v, kind))
                 { info with Members = members })
         ConstructorDeclaration(kind, interfaces)
-    | OverrideDeclaration(args, body, info) ->
-        OverrideDeclaration(args, optimizeExpr com body, info)
+    | AttachedDeclaration attMemb ->
+        match attMemb with
+        | AttachedMember.Single i ->
+            { i with Body = optimizeExpr com i.Body }
+            |> AttachedMember.Single |> AttachedDeclaration
+        | AttachedMember.GetterAndSetter(i1, i2) ->
+            ({ i1 with Body = optimizeExpr com i1.Body },
+             { i2 with Body = optimizeExpr com i2.Body })
+            |> AttachedMember.GetterAndSetter |> AttachedDeclaration
 
 let optimizeFile (com: ICompiler) (file: File) =
     let newDecls = List.map (optimizeDeclaration com) file.Declarations

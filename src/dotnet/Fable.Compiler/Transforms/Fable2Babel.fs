@@ -1306,33 +1306,51 @@ module Util =
               |> ExpressionStatement :> Statement |> U2.Case1 ]
         else Array.map U2.Case1 statements |> Array.toList
 
-    let transformOverride (com: IBabelCompiler) ctx (info: Fable.OverrideDeclarationInfo) args body =
-        let defineGetterOrSetter kind funcCons propName funcExpr =
+    let transformAttached (com: IBabelCompiler) ctx (attMember: Fable.AttachedMember) =
+        let getMemberParts (info: Fable.AttachedMemberInfo) =
+            let cons = Identifier info.EntityName :> Expression
+            let name, hasSpread, body =
+                match info.Kind with
+                | Fable.ObjectIterator -> "Symbol.iterator", false, Replacements.enumerator2iterator info.Body
+                | Fable.ObjectMethod hasSpread -> info.Name, hasSpread, info.Body
+                | _ -> info.Name, false, info.Body
+            let boundThis, args = prepareBoundThis "this" info.Args
+            let args, body = getMemberArgsAndBody com ctx None boundThis args hasSpread body
+            cons, name, FunctionExpression(args, body)
+
+        let declareProp cons name getterSetter =
+            let getterSetter =
+                getterSetter |> Array.map (fun (kind, e) ->
+                    let kind =
+                        match kind with
+                        | Fable.ObjectGetter -> "get"
+                        | Fable.ObjectSetter -> "set"
+                        | k -> failwithf "Unexpected kind %A when declaring property" k
+                    ObjectProperty(StringLiteral kind, e) |> U3.Case1)
             jsObject "defineProperty"
-                [| get None funcCons "prototype"
-                   StringLiteral propName
-                   ObjectExpression [|ObjectProperty(StringLiteral kind, funcExpr) |> U3.Case1|] |]
-        let funcCons = Identifier info.EntityName :> Expression
-        let memberName, hasSpread, body =
+                [| get None cons "prototype"
+                   StringLiteral name
+                   ObjectExpression getterSetter |]
+
+        match attMember with
+        | Fable.AttachedMember.Single info ->
+            let cons, name, expr = getMemberParts info
             match info.Kind with
-            | Fable.ObjectIterator -> "Symbol.iterator", false, Replacements.enumerator2iterator body
-            | Fable.ObjectMethod hasSpread -> info.Name, hasSpread, body
-            | _ -> info.Name, false, body
-        let boundThis, args = prepareBoundThis "this" args
-        let args, body = getMemberArgsAndBody com ctx None boundThis args hasSpread body
-        let funcExpr = FunctionExpression(args, body)
-        match info.Kind with
-        | Fable.ObjectGetter -> defineGetterOrSetter "get" funcCons memberName funcExpr
-        | Fable.ObjectSetter -> defineGetterOrSetter "set" funcCons memberName funcExpr
-        | _ ->
-            let protoMember =
-                match memberName with
-                | Naming.StartsWith "Symbol." symbolName -> get None (Identifier "Symbol") symbolName
-                // Compile ToString in lower case for compatibity with JS (and debugger tools)
-                | "ToString" -> upcast StringLiteral "toString"
-                | name -> upcast StringLiteral name
-            let protoMember = getExpr None (get None funcCons "prototype") protoMember
-            assign None protoMember funcExpr
+            | Fable.ObjectGetter | Fable.ObjectSetter as kind ->
+                declareProp cons name [|kind, expr|]
+            | _ ->
+                let protoMember =
+                    match name with
+                    | Naming.StartsWith "Symbol." symbolName -> get None (Identifier "Symbol") symbolName
+                    // Compile ToString in lower case for compatibity with JS (and debugger tools)
+                    | "ToString" -> upcast StringLiteral "toString"
+                    | name -> upcast StringLiteral name
+                let protoMember = getExpr None (get None cons "prototype") protoMember
+                assign None protoMember expr
+        | Fable.AttachedMember.GetterAndSetter(info1, info2) ->
+            let cons, name, expr1 = getMemberParts info1
+            let _, _,       expr2 = getMemberParts info2
+            declareProp cons name [| info1.Kind, expr1; info2.Kind, expr2|]
         |> ExpressionStatement :> Statement
         |> U2<_,ModuleDeclaration>.Case1 |> List.singleton
 
@@ -1449,8 +1467,8 @@ module Util =
                     | Fable.CompilerGeneratedConstructor info ->
                         transformCompilerGeneratedConstructor com ctx info
                 consDecls @ (ifcs |> List.map (transformInterfaceCast com ctx))
-            | Fable.OverrideDeclaration(args, body, info) ->
-                transformOverride com ctx info args body)
+            | Fable.AttachedDeclaration infos ->
+                transformAttached com ctx infos)
 
     let transformImports (imports: Import seq): U2<Statement, ModuleDeclaration> list =
         imports |> Seq.map (fun import ->

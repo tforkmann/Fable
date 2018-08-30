@@ -781,7 +781,15 @@ module Util =
                     |> staticCall None t (argInfo None [expr] None)
                 Fable.DelayedResolution(Fable.AsInterface(expr, cast, interfaceFullName), t, r)
 
-    let callInstanceMember com ctx r typ (argInfo: Fable.ArgInfo) (entity: FSharpEntity) (memb: FSharpMemberOrFunctionOrValue) =
+    let getObjMemberKind (memb: FSharpMemberOrFunctionOrValue) hasSpread =
+        if memb.IsPropertySetterMethod && countNonCurriedParams memb = 1
+        then Fable.ObjectSetter
+        elif memb.IsPropertyGetterMethod && countNonCurriedParams memb = 0
+        then Fable.ObjectGetter
+        else Fable.ObjectMethod hasSpread
+
+    let callInstanceMember com ctx r typ (argInfo: Fable.ArgInfo) (entity: FSharpEntity)
+                            (memb: FSharpMemberOrFunctionOrValue) (kind: Fable.ObjectMemberKind) =
         let callee =
             match argInfo.ThisArg with
             | Some callee ->
@@ -799,11 +807,11 @@ module Util =
                 sprintf "Unexpected static interface/override call: %s" memb.FullName
                 |> attachRange r |> failwith
         let name = getMemberDisplayName memb
-        match argInfo.Args with
-        | [arg] when memb.IsPropertySetterMethod ->
+        match kind, argInfo.Args with
+        | Fable.ObjectSetter, [arg] ->
             let t = memb.CurriedParameterGroups.[0].[0].Type |> makeType com Map.empty
             Fable.Set(callee, Fable.FieldSet(name, t), arg, r)
-        | _ when memb.IsPropertyGetterMethod && countNonCurriedParams memb = 0 ->
+        | Fable.ObjectGetter, _ ->
             let t = memb.ReturnParameter.Type |> makeType com Map.empty
             let kind = Fable.FieldGet(name, true, t)
             Fable.Get(callee, kind, typ, r)
@@ -825,7 +833,9 @@ module Util =
             match com.TryReplace(ctx, r, typ, info, argInfo.ThisArg, argInfo.Args) with
             | Some e -> Some e
             | None when ent.IsInterface ->
-                callInstanceMember com ctx r typ argInfo ent memb |> Some
+                argInfo.Spread = Fable.SeqSpread
+                |> getObjMemberKind memb
+                |> callInstanceMember com ctx r typ argInfo ent memb |> Some
             | None ->
                 sprintf "Cannot resolve %s.%s" info.DeclaringEntityFullName info.CompiledName
                 |> addErrorAndReturnNull com ctx.InlinePath r |> Some
@@ -857,17 +867,20 @@ module Util =
         | Some importExpr, None, _ ->
             Some importExpr
         | None, Some argInfo, Some e ->
+            let hasSpread = argInfo.Spread = Fable.SeqSpread
             match tryImportedEntity com e, argInfo.IsBaseOrSelfConstructorCall, argInfo.ThisArg with
             | Some classExpr, true, _ ->
                 staticCall r typ argInfo classExpr |> Some
             | Some _, false, Some _ ->
-                callInstanceMember com ctx r typ argInfo e memb |> Some
+                getObjMemberKind memb hasSpread
+                |> callInstanceMember com ctx r typ argInfo e memb |> Some
             | Some classExpr, false, None ->
                 if memb.IsConstructor
                 then Fable.Operation(Fable.Call(Fable.ConstructorCall classExpr, argInfo), typ, r) |> Some
                 else
                     let argInfo = { argInfo with ThisArg = Some classExpr }
-                    callInstanceMember com ctx r typ argInfo e memb |> Some
+                    getObjMemberKind memb hasSpread
+                    |> callInstanceMember com ctx r typ argInfo e memb |> Some
             | None, _, _ -> None
         | _ -> None
 
@@ -895,6 +908,19 @@ module Util =
         if not(isInline memb)
         then None
         else inlineExpr com ctx r genArgs callee args memb |> Some
+
+    let (|Attached|_|) hasSpread = function
+        | memb: FSharpMemberOrFunctionOrValue, Some (ent: FSharpEntity) ->
+            if memb.IsInstanceMember && not memb.IsExtensionMember then
+                match getObjMemberKind memb hasSpread with
+                | Fable.ObjectGetter
+                | Fable.ObjectSetter as kind -> Some(ent, memb, kind)
+                | kind when ent.IsInterface
+                        || memb.IsOverrideOrExplicitInterfaceImplementation
+                        || memb.IsDispatchSlot -> Some(ent, memb, kind)
+                | _ -> None
+            else None
+        | _ -> None
 
     /// Removes optional arguments set to None in tail position and calls the injector if necessary
     let transformOptionalArguments (com: IFableCompiler) (ctx: Context) r
@@ -941,11 +967,12 @@ module Util =
         let genArgs = lazy(matchGenericParamsFrom memb genArgs |> Seq.toList)
         let args = transformOptionalArguments com ctx r memb genArgs args
         let argTypes = getArgTypes com memb
+        let hasSpread = hasSeqSpread memb
         let argInfo: Fable.ArgInfo =
           { ThisArg = callee
             Args = args
             SignatureArgTypes = Some argTypes
-            Spread = if hasSeqSpread memb then Fable.SeqSpread else Fable.NoSpread
+            Spread = if hasSpread then Fable.SeqSpread else Fable.NoSpread
             IsBaseOrSelfConstructorCall = isBaseCall
           }
         match memb, memb.DeclaringEntity with
@@ -953,15 +980,16 @@ module Util =
         | Imported com ctx r typ (Some argInfo) imported -> imported
         | Replaced com ctx r typ argTypes genArgs argInfo replaced -> replaced
         | Inlined com ctx r genArgs callee args expr, _ -> expr
+        // Check if this is an attached member:
+        //  - interface
+        //  - abstract/overriden method
+        //  - getter/setter
+        | Attached hasSpread (ent, memb, kind) ->
+            callInstanceMember com ctx r typ argInfo ent memb kind
         | Try (tryGetBoundExpr ctx r) funcExpr, _ ->
             if isModuleValueForCalls memb
             then funcExpr
             else staticCall r typ argInfo funcExpr
-        // Check if this is an interface or abstract/overriden method
-        | _, Some entity when entity.IsInterface
-                || memb.IsOverrideOrExplicitInterfaceImplementation
-                || memb.IsDispatchSlot ->
-            callInstanceMember com ctx r typ argInfo entity memb
         | _ ->
             if isModuleValueForCalls memb
             then memberRefTyped com typ memb

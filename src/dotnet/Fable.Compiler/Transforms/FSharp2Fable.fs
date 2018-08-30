@@ -737,7 +737,8 @@ let private transformMemberValue (com: IFableCompiler) ctx isPublic name (memb: 
               HasSpread = false }
         [Fable.ValueDeclaration(fableValue, info)]
 
-let private transformMemberFunction (com: IFableCompiler) ctx isPublic name (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) =
+let private transformMemberFunction (com: IFableCompiler) ctx isPublic name
+        (memb: FSharpMemberOrFunctionOrValue) hasSpread args (body: FSharpExpr) =
     let bodyCtx, args = bindMemberArgs com ctx args
     let body = transformExpr com bodyCtx body |> run
     match body with
@@ -759,10 +760,10 @@ let private transformMemberFunction (com: IFableCompiler) ctx isPublic name (mem
                   IsPublic = isPublic
                   IsMutable = false
                   IsEntryPoint = memb.Attributes |> hasAttribute Atts.entryPoint
-                  HasSpread = hasSeqSpread memb }
+                  HasSpread = hasSpread }
             [Fable.ValueDeclaration(fn, info)]
 
-let private transformMemberFunctionOrValue (com: IFableCompiler) ctx (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) =
+let private transformMemberFunctionOrValue (com: IFableCompiler) ctx (memb: FSharpMemberOrFunctionOrValue) hasSpread args (body: FSharpExpr) =
     let isPublic = isPublicMember memb
     let name = getMemberDeclarationName com memb
     com.AddUsedVarName(name)
@@ -773,35 +774,39 @@ let private transformMemberFunctionOrValue (com: IFableCompiler) ctx (memb: FSha
     | None ->
         if isModuleValueForDeclarations memb
         then transformMemberValue com ctx isPublic name memb body
-        else transformMemberFunction com ctx isPublic name memb args body
+        else transformMemberFunction com ctx isPublic name memb hasSpread args body
 
-let private transformOverride (com: FableCompiler) (ctx: Context)
-            (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) =
+let private transformAttached (com: FableCompiler) (ctx: Context)
+            (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) kind =
     match memb.DeclaringEntity with
-    | None -> "Unexpected override without declaring entity: " + memb.FullName
+    | None -> "Unexpected attached member without declaring entity: " + memb.FullName
               |> addError com ctx.InlinePath None; []
     | Some ent ->
         let bodyCtx, args = bindMemberArgs com ctx args
         let body = transformExpr com bodyCtx body |> run
         let kind =
-            match args with
-            | [_thisArg; unitArg] when memb.IsPropertyGetterMethod && unitArg.Type = Fable.Unit ->
+            match kind, args with
+            | Some kind, _ -> kind
+            | None, [_thisArg; unitArg] when memb.IsPropertyGetterMethod && unitArg.Type = Fable.Unit ->
                 Fable.ObjectGetter
-            | [_thisArg; _valueArg] when memb.IsPropertySetterMethod ->
+            | None, [_thisArg; _valueArg] when memb.IsPropertySetterMethod ->
                 Fable.ObjectSetter
             | _ when memb.CompiledName = "System-Collections-Generic-IEnumerable`1-GetEnumerator" ->
                 Fable.ObjectIterator
             | _ -> Fable.ObjectMethod (hasSeqSpread memb)
-        let info: Fable.OverrideDeclarationInfo =
-            { Name = memb.DisplayName
-              Kind = kind
-              EntityName = getEntityDeclarationName com ent }
-        [Fable.OverrideDeclaration(args, body, info)]
+        Fable.AttachedMember.Single
+          { Name = memb.DisplayName
+            Kind = kind
+            EntityName = getEntityDeclarationName com ent
+            Args = args
+            Body = body }
+        |> Fable.AttachedDeclaration
+        |> List.singleton
 
 let private transformInterfaceImplementationMember (com: FableCompiler) ctx (memb: FSharpMemberOrFunctionOrValue) args (body: FSharpExpr) =
     // Some interfaces will be implemented in the prototype
     if Set.contains memb.CompiledName Naming.interfaceMethodsImplementedInPrototype
-    then transformOverride com ctx memb args body
+    then transformAttached com ctx memb args body None
     else
         match memb.DeclaringEntity, tryGetInterfaceDefinitionFromMethod memb with
         | Some ent, Some interfaceEntity when not(Naming.ignoredInterfaces.Contains interfaceEntity.FullName) ->
@@ -837,8 +842,16 @@ let private transformMemberDecl (com: FableCompiler) (ctx: Context) (memb: FShar
     elif memb.IsExplicitInterfaceImplementation
     then transformInterfaceImplementationMember com ctx memb args body
     elif memb.IsOverrideOrExplicitInterfaceImplementation
-    then transformOverride com ctx memb args body
-    else transformMemberFunctionOrValue com ctx memb args body
+    then transformAttached com ctx memb args body None
+    else
+        let hasSpread = hasSeqSpread memb
+        if memb.IsInstanceMember && not memb.IsExtensionMember then
+            match getObjMemberKind memb hasSpread with
+            | Fable.ObjectGetter | Fable.ObjectSetter as kind ->
+                transformAttached com ctx memb args body (Some kind)
+            | _ ->
+                transformMemberFunctionOrValue com ctx memb hasSpread args body
+        else transformMemberFunctionOrValue com ctx memb hasSpread args body
 
 let interfaceImplementations (com: IFableCompiler) (ent: FSharpEntity) =
     ent.AllInterfaces |> Seq.choose (fun interfaceType ->
@@ -867,6 +880,48 @@ let interfaceImplementations (com: IFableCompiler) (ent: FSharpEntity) =
             }: Fable.InterfaceImplementation |> Some
         | _ -> None)
     |> Seq.toList
+
+/// In case this is a recursive module, do a first pass to add
+/// all entity and member names as used var names
+let private addDeclarationNames (com: FableCompiler) rootDecls =
+    for d in rootDecls do
+        match d with
+        | FSharpImplementationFileDeclaration.Entity(ent,_) ->
+            com.AddUsedVarName(ent.CompiledName)
+        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(memb,_,_) ->
+            com.AddUsedVarName(memb.CompiledName)
+        | FSharpImplementationFileDeclaration.InitAction _ -> ()
+    rootDecls
+
+/// Add interface implementations to constructor declarations
+/// and put together getters and setters
+let rec private collectInterfacesAndProperties (com: FableCompiler) acc decls =
+    match decls with
+    | [] -> List.rev acc
+    | decl::restDecls ->
+        match decl with
+        | Fable.ConstructorDeclaration(kind, interfaces) when not(List.isEmpty interfaces) ->
+            let decl =
+                Fable.ConstructorDeclaration(kind, interfaces |> List.map (fun info ->
+                    let ms = com.InterfaceImplementationMembers.Get(info.Name)
+                    { info with Members = ms }))
+            collectInterfacesAndProperties com (decl::acc) restDecls
+        | Fable.AttachedDeclaration(Fable.AttachedMember.Single info) ->
+            let decl, restDecls =
+                match info.Kind with
+                | Fable.ObjectGetter | Fable.ObjectSetter ->
+                    match restDecls with
+                    | Fable.AttachedDeclaration(Fable.AttachedMember.Single info2)::restDecls
+                            when (info2.Kind = Fable.ObjectGetter || info2.Kind = Fable.ObjectSetter)
+                                && info.Name = info2.Name && info.EntityName = info2.EntityName ->
+                        let decl =
+                            Fable.AttachedMember.GetterAndSetter(info, info2)
+                            |> Fable.AttachedDeclaration
+                        decl, restDecls
+                    | _ -> decl, restDecls
+                | _ -> decl, restDecls
+            collectInterfacesAndProperties com (decl::acc) restDecls
+        | decl -> collectInterfacesAndProperties com (decl::acc) restDecls
 
 let private transformDeclarations (com: FableCompiler) ctx rootEnt rootDecls =
     let rec transformDeclarationsInner (com: FableCompiler) (ctx: Context) fsDecls =
@@ -908,23 +963,10 @@ let private transformDeclarations (com: FableCompiler) ctx rootEnt rootDecls =
                 transformMemberDecl com ctx meth args body
             | FSharpImplementationFileDeclaration.InitAction fe ->
                 [transformExpr com ctx fe |> run |> Fable.ActionDeclaration])
-    // In case this is a recursive module, do a first pass to add
-    // all entity and member names as used var names
-    rootDecls |> List.iter (function
-        | FSharpImplementationFileDeclaration.Entity(ent,_) ->
-            com.AddUsedVarName(ent.CompiledName)
-        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(memb,_,_) ->
-            com.AddUsedVarName(memb.CompiledName)
-        | FSharpImplementationFileDeclaration.InitAction _ -> ()
-    )
-    let decls = transformDeclarationsInner com ctx rootDecls
-    if com.InterfaceImplementationMembers.Count > 0 then
-        decls |> List.map (function
-            | Fable.ConstructorDeclaration(kind, interfaces) when not(List.isEmpty interfaces) ->
-                Fable.ConstructorDeclaration(kind, interfaces |> List.map (fun info ->
-                    { info with Members = com.InterfaceImplementationMembers.Get(info.Name) }))
-            | decl -> decl)
-    else decls
+
+    addDeclarationNames com rootDecls
+    |> transformDeclarationsInner com ctx
+    |> collectInterfacesAndProperties com []
 
 let private getRootModuleAndDecls decls =
     let (|CommonNamespace|_|) = function

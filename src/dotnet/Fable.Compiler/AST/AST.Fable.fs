@@ -86,10 +86,17 @@ type ConstructorKind =
     | UnionConstructor of UnionConstructorInfo
     | CompilerGeneratedConstructor of CompilerGeneratedConstructorInfo
 
-type OverrideDeclarationInfo =
+type AttachedMemberInfo =
     { Name: string
       Kind: ObjectMemberKind
-      EntityName: string }
+      EntityName: string
+      Args: Ident list
+      Body: Expr }
+
+[<RequireQualifiedAccess>]
+type AttachedMember =
+    | Single of AttachedMemberInfo
+    | GetterAndSetter of AttachedMemberInfo * AttachedMemberInfo
 
 type InterfaceImplementation =
     { Name: string
@@ -103,7 +110,7 @@ type InterfaceImplementation =
 type Declaration =
     | ActionDeclaration of Expr
     | ValueDeclaration of Expr * ValueDeclarationInfo
-    | OverrideDeclaration of args: Ident list * body: Expr * OverrideDeclarationInfo
+    | AttachedDeclaration of AttachedMember
     | ConstructorDeclaration of ConstructorKind * InterfaceImplementation list
 
 type File(sourcePath, decls, ?usedVarNames, ?dependencies) =

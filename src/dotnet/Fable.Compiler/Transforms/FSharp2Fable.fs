@@ -55,10 +55,12 @@ let private transformNewUnion com ctx r fsType
         Fable.NewUnion(argExprs, unionCase, tdef, genArgs) |> Fable.Value
 
 let private transformTraitCall com (ctx: Context) r typ (sourceTypes: FSharpType list) traitName (flags: MemberFlags) (argTypes: FSharpType list) (argExprs: FSharpExpr list) =
-    let makeCallInfo traitName entityFullName argTypes genArgs: Fable.ReplaceCallInfo =
+    let makeCallInfo traitName isGetter isSetter entityFullName argTypes genArgs: Fable.ReplaceCallInfo =
         { SignatureArgTypes = argTypes
           DeclaringEntityFullName = entityFullName
-          Spread = Fable.NoSpread
+          HasSpread = false
+          IsGetter = isGetter
+          IsSetter = isSetter
           CompiledName = traitName
           OverloadSuffix = lazy ""
           GenericArgs =
@@ -75,6 +77,11 @@ let private transformTraitCall com (ctx: Context) r typ (sourceTypes: FSharpType
         |> Option.map (fun memb -> makeCallFrom com ctx r typ false [] thisArg args memb)
 
     let isInstance = flags.IsInstance
+    let isGetter, isSetter =
+        match flags.MemberKind with
+        | MemberKind.PropertyGet -> true, false
+        | MemberKind.PropertySet -> false, true
+        | _ -> false, false
     let argTypes = List.map (makeType com ctx.GenericArgs) argTypes
     let argExprs = List.map (fun e -> com.Transform(ctx, e)) argExprs
     let thisArg, args, argTypes =
@@ -87,16 +94,16 @@ let private transformTraitCall com (ctx: Context) r typ (sourceTypes: FSharpType
         // Types with specific entry in Fable.AST
         // TODO: Check other types like booleans or numbers?
         | Fable.String ->
-            let info = makeCallInfo traitName Types.string argTypes []
+            let info = makeCallInfo traitName isGetter isSetter Types.string argTypes []
             Replacements.strings com ctx r typ info thisArg args
         | Fable.Option genArg ->
-            let info = makeCallInfo traitName Types.option argTypes [genArg]
+            let info = makeCallInfo traitName isGetter isSetter Types.option argTypes [genArg]
             Replacements.options com ctx r typ info thisArg args
         | Fable.Array genArg ->
-            let info = makeCallInfo traitName Types.array argTypes [genArg]
+            let info = makeCallInfo traitName isGetter isSetter Types.array argTypes [genArg]
             Replacements.arrays com ctx r typ info thisArg args
         | Fable.List genArg ->
-            let info = makeCallInfo traitName Types.list argTypes [genArg]
+            let info = makeCallInfo traitName isGetter isSetter Types.list argTypes [genArg]
             Replacements.lists com ctx r typ info thisArg args
         // Declared types not in Fable AST
         | Fable.DeclaredType(entity, genArgs) ->

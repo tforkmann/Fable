@@ -555,9 +555,6 @@ let applyOp (com: ICompiler) (ctx: Context) r t opName (args: Expr list) argType
     | Builtin(FSharpSet _)::_ ->
         let mangledName = Naming.buildNameWithoutSanitationFrom "FSharpSet" true opName ""
         Helper.CoreCall("Set", mangledName, t, args, argTypes, ?loc=r)
-    // | Builtin (FSharpMap _)::_ ->
-    //     let mangledName = Naming.buildNameWithoutSanitationFrom "FSharpMap" true opName overloadSuffix.Value
-    //     Helper.CoreCall("Map", mangledName, t, args, argTypes, ?loc=r)
     | Builtin BclTimeSpan::_ ->
         nativeOp opName argTypes args
     | CustomOp com ctx opName m ->
@@ -908,10 +905,18 @@ let getMangledNames (i: CallInfo) (thisArg: Expr option) =
     let mangledName = Naming.buildNameWithoutSanitationFrom entityName isStatic memberName i.OverloadSuffix.Value
     moduleName, mangledName
 
-let bclType (_: ICompiler) (ctx: Context) r t (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
-    let moduleName, mangledName = getMangledNames i thisArg
-    let args = match thisArg with Some callee -> callee::args | _ -> args
-    Helper.CoreCall(moduleName, mangledName, t, args, i.SignatureArgTypes, ?loc=r) |> Some
+let bclType (_: ICompiler) (_: Context) r t (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
+    match thisArg, args, i.SignatureArgTypes, i.IsGetter, i.IsSetter with
+    | Some thisArg, _, _, true, _ ->
+        let name = Naming.removeGetSetPrefix i.CompiledName
+        get r t thisArg name |> Some
+    | Some thisArg, [value], [t], _, true ->
+        let name = Naming.removeGetSetPrefix i.CompiledName
+        Set(thisArg, FieldSet(name, t), value, r) |> Some
+    | _ ->
+        let moduleName, mangledName = getMangledNames i thisArg
+        let args = match thisArg with Some callee -> callee::args | _ -> args
+        Helper.CoreCall(moduleName, mangledName, t, args, i.SignatureArgTypes, ?loc=r) |> Some
 
 let fsharpModule (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
     let moduleName, mangledName = getMangledNames i thisArg
@@ -937,7 +942,8 @@ let getFableReplLibImport isStatic (entityFullName: string) memberName overloadS
     makeCustomImport Fable.Any mangledName ("fable-repl-lib/" + fileName)
 
 let fableReplLib (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
-    let argInfo = { argInfo thisArg args (Some i.SignatureArgTypes) with Spread = i.Spread }
+    let argInfo = argInfo thisArg args (Some i.SignatureArgTypes)
+    let argInfo = { argInfo with Spread = if i.HasSpread then SeqSpread else NoSpread }
     getFableReplLibImport (Option.isNone thisArg) i.DeclaringEntityFullName i.CompiledName i.OverloadSuffix.Value
     |> staticCall r t argInfo |> Some
 
@@ -1163,8 +1169,8 @@ let implementedStringFunctions =
 let strings (com: ICompiler) (ctx: Context) r t (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
     let join nonDelimiterArgType args =
         let hasSpread =
-            match i.Spread, nonDelimiterArgType with
-            | SeqSpread, _ -> true
+            match i.HasSpread, nonDelimiterArgType with
+            | true, _ -> true
             | _, EntFullName Types.ienumerableGeneric -> true
             | _ -> false
         Helper.CoreCall("String", "join", t, args, hasSpread=hasSpread, ?loc=r)
@@ -1255,9 +1261,8 @@ let strings (com: ICompiler) (ctx: Context) r t (i: CallInfo) (thisArg: Expr opt
     | "CompareOrdinal", None, _ ->
         Helper.CoreCall("String", "compareOrdinal", t, args, ?loc=r) |> Some
     | Patterns.SetContains implementedStringFunctions, thisArg, args ->
-        let hasSpread = match i.Spread with SeqSpread -> true | _ -> false
         Helper.CoreCall("String", Naming.lowerFirst i.CompiledName, t, args, i.SignatureArgTypes,
-                        hasSpread=hasSpread, ?thisArg=thisArg, ?loc=r) |> Some
+                        hasSpread=i.HasSpread, ?thisArg=thisArg, ?loc=r) |> Some
     | _ -> None
 
 let stringModule (com: ICompiler) (ctx: Context) r t (i: CallInfo) (_: Expr option) (args: Expr list) =
@@ -1492,14 +1497,25 @@ let listModule (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (_: Exp
         let args = injectArg com ctx r "List" meth i.GenericArgs args
         Helper.CoreCall("List", meth, t, args, i.SignatureArgTypes, ?loc=r) |> Some
 
+let callFSharpType (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo)
+                        (thisArg: Expr option) (args: Expr list) fsharpName moduleName =
+    match thisArg, args, i.SignatureArgTypes, i.IsGetter, i.IsSetter with
+    | Some thisArg, _, _, true, _ ->
+        let name = Naming.removeGetSetPrefix i.CompiledName
+        get r t thisArg name |> Some
+    | Some thisArg, [value], [t], _, true ->
+        let name = Naming.removeGetSetPrefix i.CompiledName
+        Set(thisArg, FieldSet(name, t), value, r) |> Some
+    | _ ->
+        let isStatic = Option.isNone thisArg
+        let mangledName = Naming.buildNameWithoutSanitationFrom fsharpName isStatic i.CompiledName i.OverloadSuffix.Value
+        let args = injectArg com ctx r moduleName mangledName i.GenericArgs args
+        Helper.CoreCall(moduleName, mangledName, t, args, i.SignatureArgTypes, ?thisArg=thisArg, ?loc=r) |> Some
+
 let sets (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
     match i.CompiledName with
     | ".ctor" -> (genArg com ctx r 0 i.GenericArgs) |> makeSet com r t "OfSeq" args |> Some
-    | _ ->
-        let isStatic = Option.isNone thisArg
-        let mangledName = Naming.buildNameWithoutSanitationFrom "FSharpSet" isStatic i.CompiledName i.OverloadSuffix.Value
-        let args = injectArg com ctx r "Set" mangledName i.GenericArgs args
-        Helper.CoreCall("Set", mangledName, t, args, i.SignatureArgTypes, ?thisArg=thisArg, ?loc=r) |> Some
+    | _ -> callFSharpType com ctx r t i thisArg args "FSharpSet" "Set"
 
 let setModule (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (_: Expr option) (args: Expr list) =
     let meth = Naming.lowerFirst i.CompiledName
@@ -1509,11 +1525,7 @@ let setModule (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (_: Expr
 let maps (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (thisArg: Expr option) (args: Expr list) =
     match i.CompiledName with
     | ".ctor" -> (genArg com ctx r 0 i.GenericArgs) |> makeMap com r t "OfSeq" args |> Some
-    | _ ->
-        let isStatic = Option.isNone thisArg
-        let mangledName = Naming.buildNameWithoutSanitationFrom "FSharpMap" isStatic i.CompiledName i.OverloadSuffix.Value
-        let args = injectArg com ctx r "Map" mangledName i.GenericArgs args
-        Helper.CoreCall("Map", mangledName, t, args, i.SignatureArgTypes, ?thisArg=thisArg, ?loc=r) |> Some
+    | _ -> callFSharpType com ctx r t i thisArg args "FSharpMap" "Map"
 
 let mapModule (com: ICompiler) (ctx: Context) r (t: Type) (i: CallInfo) (_: Expr option) (args: Expr list) =
     let meth = Naming.lowerFirst i.CompiledName

@@ -781,11 +781,17 @@ module Util =
                     |> staticCall None t (argInfo None [expr] None)
                 Fable.DelayedResolution(Fable.AsInterface(expr, cast, interfaceFullName), t, r)
 
+    let isGetter (memb: FSharpMemberOrFunctionOrValue) =
+        memb.IsPropertyGetterMethod && countNonCurriedParams memb = 0
+
+    let isSetter (memb: FSharpMemberOrFunctionOrValue) =
+        memb.IsPropertySetterMethod && countNonCurriedParams memb = 1
+
     let getObjMemberKind (memb: FSharpMemberOrFunctionOrValue) hasSpread =
-        if memb.IsPropertySetterMethod && countNonCurriedParams memb = 1
-        then Fable.ObjectSetter
-        elif memb.IsPropertyGetterMethod && countNonCurriedParams memb = 0
+        if isGetter memb
         then Fable.ObjectGetter
+        elif isSetter memb
+        then Fable.ObjectSetter
         else Fable.ObjectMethod hasSpread
 
     let callInstanceMember com ctx r typ (argInfo: Fable.ArgInfo) (entity: FSharpEntity)
@@ -826,7 +832,9 @@ module Util =
             let info: Fable.ReplaceCallInfo =
               { SignatureArgTypes = argTypes
                 DeclaringEntityFullName = ent.FullName
-                Spread = argInfo.Spread
+                HasSpread = argInfo.Spread = Fable.SeqSpread
+                IsGetter = isGetter memb
+                IsSetter = isSetter memb
                 CompiledName = memb.CompiledName
                 OverloadSuffix = lazy if ent.IsFSharpModule then "" else OverloadSuffix.getHash ent memb
                 GenericArgs = genArgs.Value }

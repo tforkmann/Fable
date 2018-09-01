@@ -220,11 +220,6 @@ module Util =
             | Fable.ArrayAlloc(TransformExpr com ctx size) ->
                 upcast NewExpression(Identifier "Array", [|size|])
 
-    let makeStringArray strings =
-        strings
-        |> List.mapToArray (fun x -> StringLiteral x :> Expression)
-        |> ArrayExpression :> Expression
-
     let makeJsObject pairs =
         pairs |> List.mapToArray (fun (name, value) ->
             let prop, computed = memberFromName name
@@ -234,6 +229,9 @@ module Util =
     let assign range left right =
         AssignmentExpression(AssignEqual, left, right, ?loc=range)
         :> Expression
+
+    let assignAsStatement range left right =
+        assign range left right |> ExpressionStatement :> Statement
 
     /// Immediately Invoked Function Expression
     let iife (com: IBabelCompiler) ctx (expr: Fable.Expr) =
@@ -344,9 +342,9 @@ module Util =
                 | Some tempVar ->
                     yield varDeclaration (Identifier tempVar) false arg :> Statement
                 | None ->
-                    yield assign None (Identifier argId) arg |> ExpressionStatement :> Statement
+                    yield assignAsStatement None (Identifier argId) arg
             for KeyValue(argId,tempVar) in tempVars do
-                yield assign None (Identifier argId) (Identifier tempVar) |> ExpressionStatement :> Statement
+                yield assignAsStatement None (Identifier argId) (Identifier tempVar)
             yield upcast ContinueStatement(Identifier tc.Label)
         |]
 
@@ -362,12 +360,15 @@ module Util =
 
     let transformDelayedResolution (com: IBabelCompiler) (ctx: Context) r kind: Expression =
         match kind with
-        | Fable.AsInterface(expr, cast, interfaceFullName) ->
-            match expr, interfaceFullName with
-            | Replacements.ListLiteral(exprs, _), Types.ienumerableGeneric ->
+        | Fable.AsSeqFromList expr ->
+            match expr with
+            | Replacements.ListLiteral(exprs, _) ->
                 // Use type Any to prevent creation of a typed array
                 makeTypedArray com ctx Fable.Any (Fable.ArrayValues exprs)
-            | _ -> com.TransformAsExpr(ctx, cast expr)
+            | _ -> com.TransformAsExpr(ctx, expr)
+        | Fable.AsInterface(TransformExpr com ctx expr, castFn, interfaceFullName) ->
+            let castFn = com.TransformAsExpr(ctx, castFn)
+            coreUtil com ctx "castToInterface" [|expr; ofString interfaceFullName; castFn|]
         | Fable.AsPojo(expr, caseRule) -> com.TransformAsExpr(ctx, Replacements.makePojo com r caseRule expr)
         | Fable.AsUnit expr -> com.TransformAsExpr(ctx, expr)
         | Fable.Curry(expr, arity) -> com.TransformAsExpr(ctx, Replacements.curryExprAtRuntime arity expr)
@@ -422,8 +423,7 @@ module Util =
         let primitiveTypeInfo knownTypes name =
             knownTypes, coreValue com ctx "Reflection" name
         let nonGenericTypeInfo knownTypes fullname =
-            [| StringLiteral fullname :> Expression |]
-            |> coreLibCall com ctx "Reflection" "type"
+            coreLibCall com ctx "Reflection" "type" [|ofString fullname|]
             |> Tuple.make2 knownTypes
         let resolveGenerics knownTypes generics: KnownTypes * Expression[] =
             (knownTypes, generics) ||> foldAndMap (fun knownTypes genArg ->
@@ -642,8 +642,8 @@ module Util =
         | None -> upcast ExpressionStatement babelExpr
         // TODO: Where to put these int wrappings? Add them also for function arguments?
         | Some Return -> upcast ReturnStatement(wrapIntExpression t babelExpr)
-        | Some(Assign left) -> upcast ExpressionStatement(assign None left babelExpr)
-        | Some(Target left) -> upcast ExpressionStatement(assign None left babelExpr)
+        | Some(Assign left) -> assignAsStatement None left babelExpr
+        | Some(Target left) -> assignAsStatement None left babelExpr
 
     let transformOperation com ctx range opKind: Expression =
         match opKind with
@@ -882,7 +882,7 @@ module Util =
                     coreLibCall com ctx "Types" "isException" [|com.TransformAsExpr(ctx, expr)|]
                 | fullName -> warnAndEvalToFalse (defaultArg fullName Naming.unknown)
             | _ ->
-                if not(List.isEmpty genArgs) then
+                if List.isNotEmpty genArgs then
                     "Cannot type test generic arguments"
                     |> addWarning com [] range
                 let entRef = entityRefMaybeImported com ctx ent
@@ -957,8 +957,8 @@ module Util =
             let idents, _ = getDecisionTarget ctx targetIndex boundValues
             let assignments =
                 List.zip idents boundValues |> List.mapToArray (fun (id, TransformExpr com ctx value) ->
-                    assign None (ident id) value |> ExpressionStatement :> Statement)
-            let targetAssignment = assign None targetId (ofInt targetIndex) |> ExpressionStatement :> Statement
+                    assignAsStatement None (ident id) value)
+            let targetAssignment = assignAsStatement None targetId (ofInt targetIndex)
             Array.append [|targetAssignment|] assignments
         | ret ->
             let bindings, target = getDecisionTargetAndBindValues ctx targetIndex boundValues
@@ -1336,32 +1336,45 @@ module Util =
         |> ExpressionStatement :> Statement
         |> U2<_,ModuleDeclaration>.Case1 |> List.singleton
 
-    let transformUnionConstructor (com: IBabelCompiler) ctx (info: Fable.UnionConstructorInfo) =
+    let initInterfaceMap com ctx =
+        let left = coreValue com ctx "Util" "INTERFACE_MAP" |> getExpr None (ThisExpression())
+        assignAsStatement None left (NullLiteral())
+
+    let transformUnionConstructor (com: IBabelCompiler) ctx (info: Fable.UnionConstructorInfo) hasInterfaces =
         let baseRef = coreValue com ctx "Types" "Union"
         let args =
             [|Identifier "tag" |> toPattern
               Identifier "name" |> toPattern
               Identifier "fields" |> restElement|]
         let body =
-            [Identifier "tag" :> Expression; Identifier "name" :> _; SpreadElement(Identifier "fields") :> _]
-            |> callFunctionWithThisContext None baseRef thisExpr |> ExpressionStatement
-        [declareType com ctx info.IsPublic info.EntityName args (BlockStatement [|body|]) (Some baseRef)]
+          [|
+            if hasInterfaces then
+                yield initInterfaceMap com ctx
+            yield [
+                Identifier "tag" :> Expression
+                Identifier "name" :> _
+                SpreadElement(Identifier "fields") :> _
+            ] |> callFunctionWithThisContext None baseRef thisExpr |> ExpressionStatement :> Statement
+          |] |> BlockStatement
+        [declareType com ctx info.IsPublic info.EntityName args body (Some baseRef)]
 
-    let transformCompilerGeneratedConstructor (com: IBabelCompiler) ctx (info: Fable.CompilerGeneratedConstructorInfo) =
+    let transformCompilerGeneratedConstructor (com: IBabelCompiler) ctx (info: Fable.CompilerGeneratedConstructorInfo) hasInterfaces =
         let args =
             [| for i = 1 to info.Entity.FSharpFields.Count do
                 yield Identifier("arg" + string i) |]
-        let setters =
-            info.Entity.FSharpFields
-            |> Seq.mapi (fun i fi ->
+        let body =
+          [|
+            if hasInterfaces then
+                yield initInterfaceMap com ctx
+            yield! info.Entity.FSharpFields |> Seq.mapi (fun i fi ->
                 let left = get None (ThisExpression()) fi.Name
                 let right =
-                    /// Shortcut instead of using wrapIntExpression
+                    // Shortcut instead of using wrapIntExpression
                     if FSharp2Fable.TypeHelpers.isSignedIntType fi.FieldType
                     then BinaryExpression(BinaryOrBitwise, args.[i], NumericLiteral(0.)) :> Expression
                     else args.[i] :> _
-                assign None left right |> ExpressionStatement :> Statement)
-            |> Seq.toArray
+                assignAsStatement None left right)
+          |] |> BlockStatement
         let baseExpr =
             if info.Entity.IsFSharpExceptionDeclaration
             then coreValue com ctx "Types" "FSharpException" |> Some
@@ -1369,7 +1382,7 @@ module Util =
             then coreValue com ctx "Types" "Record" |> Some
             else None
         let args = [|for arg in args do yield arg |> toPattern|]
-        [declareType com ctx info.IsPublic info.EntityName args (BlockStatement setters) baseExpr]
+        [declareType com ctx info.IsPublic info.EntityName args body baseExpr]
 
     let transformImplicitConstructor (com: IBabelCompiler) ctx (info: Fable.ClassImplicitConstructorInfo) =
         let boundThis = Some("this", info.BoundConstructorThis)
@@ -1445,9 +1458,11 @@ module Util =
                     | Fable.ClassImplicitConstructor info ->
                         transformImplicitConstructor com ctx info
                     | Fable.UnionConstructor info ->
-                        transformUnionConstructor com ctx info
+                        List.isNotEmpty ifcs
+                        |> transformUnionConstructor com ctx info
                     | Fable.CompilerGeneratedConstructor info ->
-                        transformCompilerGeneratedConstructor com ctx info
+                        List.isNotEmpty ifcs
+                        |> transformCompilerGeneratedConstructor com ctx info
                 consDecls @ (ifcs |> List.map (transformInterfaceCast com ctx))
             | Fable.OverrideDeclaration(args, body, info) ->
                 transformOverride com ctx info args body)

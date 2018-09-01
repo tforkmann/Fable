@@ -42,6 +42,10 @@ module Tuple3 =
 
 [<RequireQualifiedAccess>]
 module List =
+    let isNotEmpty = function
+        | [] -> false
+        | _ -> true
+
     let isSingle = function
         | [_] -> true
         | _ -> false

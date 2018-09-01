@@ -31,11 +31,14 @@ let visit f e =
             NewUnion(List.map f exprs, uci, ent, genArgs) |> Value
     | Test(e, kind, r) -> Test(f e, kind, r)
     | DelayedResolution(kind, t, r) ->
-        match kind with
-        | AsInterface(e, cast, name) -> DelayedResolution(AsInterface(f e, cast, name), t, r)
-        | AsPojo(e1, e2) -> DelayedResolution(AsPojo(f e1, f e2), t, r)
-        | AsUnit e -> DelayedResolution(AsUnit(f e), t, r)
-        | Curry(e, arity) -> DelayedResolution(Curry(f e, arity), t, r)
+        let kind =
+            match kind with
+            | AsInterface(e, cast, name) -> AsInterface(f e, cast, name)
+            | AsPojo(e1, e2) -> AsPojo(f e1, f e2)
+            | AsSeqFromList e -> AsSeqFromList(f e)
+            | AsUnit e -> AsUnit(f e)
+            | Curry(e, arity) -> Curry(f e, arity)
+        DelayedResolution(kind, t, r)
     | Function(kind, body, name) -> Function(kind, f body, name)
     | ObjectExpr(members, t, baseCall) ->
         let baseCall = Option.map f baseCall
@@ -127,7 +130,7 @@ let getSubExpressions = function
     | Test(e, _, _) -> [e]
     | DelayedResolution(kind, _, _) ->
         match kind with
-        | AsInterface(e,_,_) | AsUnit e | Curry(e,_) -> [e]
+        | AsInterface(e,_,_) | AsSeqFromList e | AsUnit e | Curry(e,_) -> [e]
         | AsPojo(e1, e2) -> [e1; e2]
     | Function(_, body, _) -> [body]
     | ObjectExpr(members, _, baseCall) ->

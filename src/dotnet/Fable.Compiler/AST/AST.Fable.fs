@@ -250,8 +250,9 @@ type ObjectMember =
     | ObjectMember of key: Expr * value: Expr * ObjectMemberKind
 
 type DelayedResolutionKind =
-    | AsInterface of source: Expr * cast: (Expr->Expr) * interfaceFullName: string
+    | AsInterface of source: Expr * castFunc: Expr * interfaceFullName: string
     | AsPojo of Expr * caseRules: Expr
+    | AsSeqFromList of source: Expr
     | AsUnit of Expr
     | Curry of Expr * arity: int
 

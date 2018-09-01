@@ -2,6 +2,7 @@
 import { compare as compareDates, toString as dateToString } from "./Date";
 
 export const THIS_REF = Symbol("this");
+export const INTERFACE_MAP = Symbol("interfaces");
 
 // In case the object has been casted to an interface, test also agains THIS_REF
 export function instanceofExtended(obj: any, cons: FunctionConstructor) {
@@ -10,6 +11,20 @@ export function instanceofExtended(obj: any, cons: FunctionConstructor) {
 
 export function downcast(obj: any) {
   return obj[THIS_REF] != null ? obj[THIS_REF] : obj;
+}
+
+export function castToInterface(obj: any, interfaceFullName: string, castFn: (x: any) => any): any {
+  let casted: any = null;
+  if (obj[INTERFACE_MAP] == null) {
+    obj[INTERFACE_MAP] = new Map();
+  } else {
+    casted = obj[INTERFACE_MAP].get(interfaceFullName);
+  }
+  if (casted == null) {
+    casted = castFn(obj);
+    obj[INTERFACE_MAP].set(interfaceFullName, casted);
+  }
+  return casted;
 }
 
 // Object.assign flattens getters and setters

@@ -495,9 +495,7 @@ let enumerator2iterator (e: Expr) =
 let toSeq r t (e: Expr) =
     match e.Type with
     // Delay resolution for a chance to optimize a list into an array
-    | List _ ->
-        let kind = AsInterface(e, id, Types.ienumerableGeneric)
-        DelayedResolution(kind, t, r)
+    | List _ -> DelayedResolution(AsSeqFromList e, t, r)
     // Convert to array to get 16-bit code units, see #1279
     | String -> stringToCharArray t e
     | _ -> e
@@ -2316,7 +2314,7 @@ let types (com: ICompiler) (ctx: Context) r t (i: CallInfo) (thisArg: Expr optio
             | Array t -> TypeInfo(t, r) |> Value |> Some
             | _ -> Null t |> Value |> Some
         | "get_IsGenericType" ->
-            List.isEmpty exprType.Generics |> not |> BoolConstant |> Value |> Some
+            List.isNotEmpty exprType.Generics |> BoolConstant |> Value |> Some
         | "get_GenericTypeArguments" | "GetGenericArguments" ->
             let arVals = exprType.Generics |> List.map (makeTypeInfo r) |> ArrayValues
             NewArray(arVals, Any) |> Value |> Some

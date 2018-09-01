@@ -1,6 +1,7 @@
 import { createMutable as createMutableMap } from "./Map";
 import { createMutable as createMutableSet } from "./Set";
-import { combineHashCodes, compare, compareArrays, equals, equalArrays, identityHash, structuralHash, numberHash, toString } from "./Util";
+import { combineHashCodes, compare, compareArrays, equals, equalArrays, identityHash,
+         INTERFACE_MAP, structuralHash, numberHash, toString } from "./Util";
 
 function sameType(x, y) {
   return y != null && Object.getPrototypeOf(x).constructor === Object.getPrototypeOf(y).constructor;
@@ -34,6 +35,7 @@ export function declare(cons, superClass) {
 }
 
 export function SystemObject() {
+  this[INTERFACE_MAP] = null;
 }
 
 SystemObject.prototype.toString = function() {

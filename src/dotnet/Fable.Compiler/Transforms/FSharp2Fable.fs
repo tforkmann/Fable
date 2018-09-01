@@ -920,7 +920,7 @@ let private transformDeclarations (com: FableCompiler) ctx rootEnt rootDecls =
     let decls = transformDeclarationsInner com ctx rootDecls
     if com.InterfaceImplementationMembers.Count > 0 then
         decls |> List.map (function
-            | Fable.ConstructorDeclaration(kind, interfaces) when not(List.isEmpty interfaces) ->
+            | Fable.ConstructorDeclaration(kind, interfaces) when List.isNotEmpty interfaces ->
                 Fable.ConstructorDeclaration(kind, interfaces |> List.map (fun info ->
                     { info with Members = com.InterfaceImplementationMembers.Get(info.Name) }))
             | decl -> decl)

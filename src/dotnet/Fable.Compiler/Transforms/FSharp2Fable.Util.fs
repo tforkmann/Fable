@@ -772,15 +772,14 @@ module Util =
                 expr
             | Some ent when isReplacementCandidate ent -> expr
             | Some ent  ->
-                let cast expr =
+                let castFn =
                     let entLoc = getEntityLocation ent
                     let file = Path.normalizePathAndEnsureFsExtension entLoc.FileName
                     let funcName = getInterfaceImplementationName com ent interfaceFullName
                     if file = com.CurrentFile
                     then makeIdent funcName |> Fable.IdentExpr
                     else makeInternalImport Fable.Any funcName file
-                    |> staticCall None t (argInfo None [expr] None)
-                Fable.DelayedResolution(Fable.AsInterface(expr, cast, interfaceFullName), t, r)
+                Fable.DelayedResolution(Fable.AsInterface(expr, castFn, interfaceFullName), t, r)
 
     let callInstanceMember com ctx r typ (argInfo: Fable.ArgInfo) (entity: FSharpEntity) (memb: FSharpMemberOrFunctionOrValue) =
         let callee =

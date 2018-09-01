@@ -239,7 +239,7 @@ module AST =
                     let remainingArity = remainingArity |> Option.map (fun x -> x - 1)
                     uncurryLambdaInner (Option.orElse name2 name) (arg::accArgs) remainingArity body
                 // If there's no arity expectation we can return the flattened part
-                | _, None when List.isEmpty accArgs |> not ->
+                | _, None when List.isNotEmpty accArgs ->
                     Function(Delegate(List.rev accArgs), expr, name) |> Some
                 // We cannot flatten lambda to the expected arity
                 | _, _ -> None

@@ -1,3 +1,7 @@
+### 1.3.18
+
+* Fix #1542: Erased DU case not working with variable as key @mvsmal
+
 ### 1.3.17
 
 * Fix #1400: Fix Deserializing into int64 from json (@vikranthc)

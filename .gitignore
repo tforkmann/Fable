@@ -1,6 +1,9 @@
 .vscode/
 jsconfig.json
 
+out*/
+bundle/
+
 nuget/
 dotnetsdk/
 src/tools/temp/

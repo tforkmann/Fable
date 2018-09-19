@@ -1,3 +1,7 @@
+### 1.3.19
+
+* Enable reading files even if they are locked by another process
+
 ### 1.3.18
 
 * Fix #1542: Erased DU case not working with variable as key @mvsmal

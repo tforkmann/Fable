@@ -18,6 +18,16 @@ module private Cache =
         cache.Add(key, value)
         value
 
+/// File.ReadAllText fails with locked files
+/// See https://stackoverflow.com/a/1389172
+let readAllText path =
+    let mutable content = ""
+    do
+        use fileStream = new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
+        use textReader = new IO.StreamReader(fileStream)
+        content <- textReader.ReadToEnd()
+    content
+
 let loadPlugins pluginPaths =
     pluginPaths
     |> Seq.collect (fun path ->
@@ -75,7 +85,7 @@ let createProject checker dirtyFiles (prevProject: Project option) (msg: Parser.
             ((prevProject.ImplementationFiles, [||]), dirtyFiles) ||> Array.fold (fun (implFiles, errors) dirtyFile ->
                 let relativePath = getRelativePath dirtyFile
                 Log.logAlways(sprintf "Parsing %s..." relativePath)
-                let source = IO.File.ReadAllText(dirtyFile)
+                let source = readAllText dirtyFile
                 // About this parameter, see https://github.com/fsharp/FSharp.Compiler.Service/issues/796#issuecomment-333094956
                 let version = IO.File.GetLastWriteTime(dirtyFile).Ticks |> int
                 // TODO: results.Errors are different from res.Errors below?
